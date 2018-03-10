@@ -6,7 +6,7 @@ import Network.BSD
 import System.IO
 
 import Control.Concurrent
-{- import qualified Control.Concurrent.Thread as Thread -}
+-- import qualified Control.Concurrent.Thread as Thread  -- not installed yet
 import Control.Concurrent.MVar
 import Control.Monad (forever)
 import System.Posix.Process (getProcessID)
@@ -78,7 +78,7 @@ listenForClient sock tidList = forever $ do
   tid <- forkIO $ processClient (conn, peer) tidList
   putStrLn ("New Thread Created with id: " ++ show tid)
   let newTids = (tid, conn)
-  putMVar tidList newTids
+  putMVar tidList (newTids:tids)
 
 
 handlerSIGUSR1 :: MVar TidSocketInfo -> IO ()
@@ -97,7 +97,7 @@ handlerSIGUSR2 tidList = do
   exitImmediately ExitSuccess
 
 
-closeSocketLoop :: MVar TidSocketInfo -> IO ()
+closeSocketLoop :: TidSocketInfo -> IO ()
 closeSocketLoop [] = return ()
 closeSocketLoop (tid:tids) = do
   -- wait for the thread to complete except possibly the main thread
