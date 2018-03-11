@@ -15,13 +15,13 @@ import System.Exit
 import System.Posix.Signals (installHandler, Handler(..), sigINT, sigUSR1, sigUSR2)
 import System.Posix.Process
 
-import Data.List
+import Data.Map as Map
 import ThreadProxy
 
 
 main :: IO ()
 main = do
-  tidList <- newMVar []
+  tidList <- newMVar Map.empty
   pid <- getProcessID
   maintid <- myThreadId
 
@@ -30,9 +30,6 @@ main = do
   let port = "8888"
       backlog = 5
 
-  installHandler sigUSR1 (Catch $ handlerSIGUSR1 tidList) Nothing
-  installHandler sigUSR2 (CatchOnce $ handlerSIGUSR2 tidList) Nothing
-  {- installHandler sigINT Ignore Nothing -}
   hostSocket port backlog tidList maintid
 
 
@@ -59,26 +56,20 @@ hostSocket port backlog tidList maintid = withSocketsDo $
 
     putStrLn ("Server running at -> " ++ show (addrAddress serveraddr))
 
-    tids <- takeMVar tidList
-    let newTids = (maintid, sock):tids
-    putMVar tidList newTids
+    installHandler sigUSR1 (Catch $ handlerSIGUSR1 tidList) Nothing
+    installHandler sigUSR2 (CatchOnce $ handlerSIGUSR2 tidList sock) Nothing
+    {- installHandler sigINT Ignore Nothing -}
 
     listenForClient sock tidList
-
     --  Should not reach here
     close sock
 
 
 listenForClient :: Socket -> MVar TidSocketInfo -> IO()
-listenForClient sock tidList = forever $ do
-  -- add the thread and client sock into the list
-  tids <- takeMVar tidList
+listenForClient sock tidList = withSocketsDo $ do
   (conn , peer) <- accept sock
-  putStrLn ("Connection from -> " ++ show peer)
   tid <- forkIO $ processClient (conn, peer) tidList
-  putStrLn ("New Thread Created with id: " ++ show tid)
-  let newTids = (tid, conn)
-  putMVar tidList (newTids:tids)
+  listenForClient sock tidList
 
 
 handlerSIGUSR1 :: MVar TidSocketInfo -> IO ()
@@ -87,19 +78,22 @@ handlerSIGUSR1 tidList = do
   putStrLn "SIGUSR1 hit -- print statistics"
   putMVar tidList tids
 
-handlerSIGUSR2 :: MVar TidSocketInfo -> IO ()
-handlerSIGUSR2 tidList = do
+handlerSIGUSR2 :: MVar TidSocketInfo -> Socket -> IO ()
+handlerSIGUSR2 tidList mainSocket = do
+  tids <- takeMVar tidList
   putStrLn "Encountered SIGUSR2 signal ..."
   putStrLn "Exiting gracefully"
-  tids <- takeMVar tidList
-  closeSocketLoop tids
-  putMVar tidList []
+  closeSocketLoop (Map.elems tids)
+  close mainSocket
+  putMVar tidList Map.empty
   exitImmediately ExitSuccess
 
 
-closeSocketLoop :: TidSocketInfo -> IO ()
 closeSocketLoop [] = return ()
 closeSocketLoop (tid:tids) = do
-  -- wait for the thread to complete except possibly the main thread
-  close (snd tid)
+  closeSocketLoop' (snd tid)
+  closeSocketLoop' (fst tid)
   closeSocketLoop tids
+
+closeSocketLoop' (Just x) = withSocketsDo $ do close x
+closeSocketLoop' Nothing = return ()

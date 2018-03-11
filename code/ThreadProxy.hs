@@ -1,41 +1,52 @@
 module ThreadProxy where
 
 import Data.Bits
-import Network.Socket hiding (recv)
+import Network.Socket hiding (recv, send)
 import Network.BSD
 import System.IO
-import Network.Socket.ByteString (recv, sendAll)
+import Network.Socket.ByteString (recv, send, sendAll)
 
 import Control.Concurrent
 import Control.Concurrent.MVar
-
 import Control.Monad (unless, forever, void)
+
 import qualified Data.ByteString as S
-import qualified Data.ByteString.Char8 as C
 import qualified Data.Text as T
+import qualified Data.ByteString.Char8 as C
 
-import Data.List
+import Data.Map as Map hiding (drop)
+import HttpParser
 
-type TidSocketInfo = [(ThreadId, Socket)]
+type TidSocketInfo = Map.Map ThreadId (Maybe Socket, Maybe Socket)   
+                    -- threadId : (clientsock, Socket)
 
-data ClientToServer = ClientToServer {
-                                       clientSock :: Socket
-                                     , serverSock :: Socket
-                                    -- requestParser :: RequestParser
-                                    -- responseParser :: ResponseParser
-                                     }
+data TerminalInfo = 
+  TerminalInfo {
+     buffer :: HttpData
+   , socketD :: Socket
+   , socketA :: SockAddr
+   , packetParserInfo :: HttpParserInfo
+   , packetData :: HttpPacket
+   , stillToProcess :: HttpData
+   , isClosed :: Bool
+   }
 
 processClient :: (Socket, SockAddr) -> MVar TidSocketInfo -> IO ()
 processClient (conn, clientaddr) tidList = withSocketsDo $
   do
-    -- add the thread and client sock into the list
-    {- tids <- takeMVar tidList -}
-    {- let newTids = (myThreadId, conn) -}
-    {- putMVar tidList newTids -}
+    -- | initialise data structures and populate the TidSocketInfo
+    thisThreadId <- myThreadId
+    tids <- takeMVar tidList
+    let newTids = Map.insert thisThreadId (Just conn, Nothing) tids
+    putMVar tidList newTids
 
-    -- accept request from the client
-    msg <- recv conn 1024      -- msg is a bytestring
-    putStrLn (show msg)
+    let clientInfo = emptyTerminal conn clientaddr HttpRequestParser
+
+    -- | recv the request from client and parse it completely
+    clientInfo' <- getRequestPacket clientInfo
+
+    let bP = buildPacket (packetData clientInfo') [] []
+    putStrLn (show bP)
 
     {- tids <- takeMVar tidList -}
     {- let x = parseRequest (C.unpack msg)  -- self made method -}
@@ -52,3 +63,86 @@ processClient (conn, clientaddr) tidList = withSocketsDo $
     {- sendAll dSock msg -}
     {- destmsg <- recv dSock 1024 -}
     {- {- putStrLn (C.unpack destmsg) -} -}
+
+
+getRequestPacket cI = withSocketsDo $
+  do
+    msg <- recv (socketD cI) 1024
+    let hI = packetParserInfo cI
+        hP = packetData cI 
+        (leftover, hI', hP') = scanner (stillToProcess cI ++ C.unpack msg) hI hP
+        cI' = updateInfoAndPacket cI leftover hI' hP'
+    if hState hI' /= ReceivedBody then getRequestPacket cI'
+                                  else return cI'
+
+
+updatingMap k v m = update (\_ -> Just v) k m
+
+emptyTerminal sock addr pType = TerminalInfo{
+  buffer = ""
+, socketD = sock
+, socketA = addr
+, packetParserInfo = emptyHttpParserInfo pType
+, packetData = emptyHttpPacket
+, stillToProcess = ""
+, isClosed = False
+}
+
+updateInfoAndPacket cI xs hI hP = TerminalInfo{
+  buffer = buffer cI
+, socketD = socketD cI
+, socketA = socketA cI
+, packetParserInfo = hI
+, packetData = hP
+, stillToProcess = xs
+, isClosed = isClosed cI
+}
+
+queue tI newData = TerminalInfo{
+  buffer = buffer tI ++ newData
+, socketD = socketD tI
+, socketA = socketA tI
+, packetParserInfo = packetParserInfo tI
+, packetData = packetData tI
+, stillToProcess = stillToProcess tI
+, isClosed = isClosed tI
+}
+
+closeSocket conn tI tidList = withSocketsDo $
+  do 
+  thisThreadId <- myThreadId
+  tids <- takeMVar tidList
+  let Just entry = Map.lookup thisThreadId tids 
+      fe = fst entry
+  if fe == Just conn then do
+                     close conn
+                     putMVar tidList (updatingMap thisThreadId (Nothing, snd entry) tids)
+                     return (tidList, closeSocket' tI)
+                     else do
+                     close conn
+                     putMVar tidList (updatingMap thisThreadId (fe, Nothing) tids)
+                     return (tidList, closeSocket' tI)
+
+closeSocket' tI= TerminalInfo{
+  buffer = buffer tI
+, socketD = socketD tI
+, socketA = socketA tI
+, packetParserInfo = packetParserInfo tI
+, packetData = packetData tI
+, stillToProcess = stillToProcess tI
+, isClosed = True
+}
+  
+
+flush tI = withSocketsDo $
+  do
+    x <- send (socketD tI) (C.pack (buffer tI))   -- should we use sendAll here
+    return TerminalInfo{
+              buffer = drop x (buffer tI)
+            , socketD = socketD tI
+            , socketA = socketA tI
+            , packetParserInfo = packetParserInfo tI
+            , packetData = packetData tI
+            , stillToProcess = stillToProcess tI
+            , isClosed = isClosed tI
+            }

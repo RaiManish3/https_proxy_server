@@ -1,7 +1,6 @@
 module HttpParser where
 
 import qualified Data.ByteString as S
-import qualified Data.ByteString.Char8 as C
 import qualified Data.Text as T
 
 import Data.List
@@ -12,7 +11,7 @@ type HttpData = String
 allowedMethods :: [HttpData]
 allowedMethods = ["GET", "POST", "HEAD", "CONNECT"]
 
-{- TODO :: ChunkParser and allowedMethods -}
+{- TODO :: ChunkParser and allowedMethods and Host Check-}
 
 -- |  data types ----------------------------------------------------
 --
@@ -45,6 +44,20 @@ data HttpPacket =
   , hHeaders :: Map.Map HttpData (HttpData, HttpData)
   , hBody :: HttpData
   , hBodySize :: Int
+  }
+  deriving Show
+
+data ChunkerState = WaitingForSize
+                  | WaitingForData
+                  | Complete
+                  deriving (Show, Eq)
+
+data ChunkerInfo =
+  ChunkerInfo{
+    cState :: ChunkerState
+  , cBody :: HttpData
+  , cChunk :: HttpData
+  , cSize :: Int
   }
   deriving Show
 
@@ -206,6 +219,13 @@ emptyHttpPacket = HttpPacket {
    , hBodySize = 0
    }
 
+emptyChunker = ChunkerInfo{
+    cState = WaitingForSize
+  , cBody = ""
+  , cChunk = ""
+  , cSize = 0
+}
+
 
 buildHeader [] _ [] = ""
 buildHeader [] _ addList = buildHeader addList [] []
@@ -223,3 +243,13 @@ scanner xs hI hP | hState hI == ReceivedBody = (xs, hI, hP)
   | y == Nothing = (ys, hI, hP)
   | otherwise = scanner ys hI' hP'
   where (y, ys, hI', hP') = rootParser xs hI hP
+
+
+{- processChunk xs cI | cState cI == WaitingForSize = processChunkSize xs cI -}
+{-   | otherwise = processChunkData xs cI -}
+
+{- processChunkSize xs cI = let (y, ys) = splitter xs -}
+{-                              f n = C. -}
+{-                           in case y of -}
+{-                                Nothing -> (xs, cI) -}
+{-                                Just yy -> (ys, f yy) -}
