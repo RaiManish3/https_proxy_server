@@ -8,8 +8,6 @@ import qualified Data.Map as Map
 
 
 type HttpData = String
-allowedMethods :: [HttpData]
-allowedMethods = ["GET", "POST", "HEAD", "CONNECT"]
 
 {- TODO :: ChunkParser and allowedMethods and Host Check-}
 
