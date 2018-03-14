@@ -162,6 +162,12 @@ handleWList termMVar tidList = withSocketsDo $
          handleWList termMVar tidList
 
 
+handleWTerminal tI = withSocketsDo $
+  do
+    if not (isClosed tI) && buffer tI /= "" then flush tI
+                                            else return tI
+
+
 -- | need to repair this function
 getRequestPacket cI = withSocketsDo $
   do
