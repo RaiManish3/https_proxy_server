@@ -224,6 +224,12 @@ emptyChunker = ChunkerInfo{
   , cSize = 0
 }
 
+{- buildUrl url | "http" /= (T.unpack . T.toLower . T.pack $ (drop 4 url)) = url -}
+{-   | otherwise = f -}
+{-   where f = let x = dropWhile (/= '/') $ drop 7 url -}
+{-              in if x == "" then "/" -}
+{-                            else x -}
+buildUrl url = url
 
 buildHeader [] _ [] = ""
 buildHeader [] _ addList = buildHeader addList [] []
@@ -232,7 +238,7 @@ buildHeader (x:xs) delList addList | elemInDel x = buildHeader xs delList addLis
   where elemInDel y = (T.unpack . T.toLower . T.pack . fst $ x) `elem` delList
 
 -- make sense only for the request packet
-buildPacket hP delList addList = let fl = tail . foldr (\x a -> " " ++ x hP ++ a) "" $ [hMethod, hUrl, hVersion]
+buildPacket hP delList addList = let fl = hMethod hP ++ " " ++ buildUrl (hUrl hP) ++ " " ++ hVersion hP
                                      hds = buildHeader (Map.elems (hHeaders hP)) delList addList
                                   in fl ++ "\r\n" ++ hds ++ "\r\n" ++ hBody hP
 

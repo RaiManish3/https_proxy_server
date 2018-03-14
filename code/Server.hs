@@ -25,7 +25,7 @@ main = do
   pid <- getProcessID
   maintid <- myThreadId
 
-  putStrLn (show pid)
+  putStrLn ("Server's Process ID: " ++ show pid)
 
   let port = "8888"
       backlog = 5

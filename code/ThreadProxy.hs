@@ -31,6 +31,7 @@ data TerminalInfo =
    , stillToProcess :: HttpData
    , isClosed :: Bool
    }
+   deriving Show
 
 processClient :: (Socket, SockAddr) -> MVar TidSocketInfo -> IO ()
 processClient (conn, clientaddr) tidList = withSocketsDo $
@@ -72,8 +73,7 @@ processRequest cI tidList = withSocketsDo $
 
     -- | make a socket to communicate to the destination server
     let hints = defaultHints {
-            addrFlags = [AI_PASSIVE]
-          , addrSocketType = Stream
+            addrSocketType = Stream
           , addrFamily = AF_INET
         }
     addrInfo <- getAddrInfo (Just hints) (Just hostname) (Just port)
@@ -99,7 +99,7 @@ processRequest cI tidList = withSocketsDo $
         let sI' = queue sI (buildPacket hP ["proxy-connection","connection","keep-alive"] [("Connection","Close")])
         requestResponseCycle cI sI' tidList
 
-    -- | TESTER
+    -- | TESTER | ---------------------------------------
     tids <- takeMVar tidList
     putStrLn ("Exiting thread....")
     putMVar tidList tids
@@ -107,59 +107,59 @@ processRequest cI tidList = withSocketsDo $
 
 requestResponseCycle cI sI tidList = withSocketsDo $
   do
-    -- | give write actions preference 
-    (cI', sI') <- handleWList cI sI
+    -- | idea is to create single write thread for both sockets
+    -- | and two seperate read threads for the server and client
 
-    -- | receive from the server until it closes its side of connection
-    (cI'', sI'', tidList') <- handleRList cI' sI' tidList
-
-
-    -- | close client socket when server socket is closed and and its buffer is empty
-    -- | ??? is above a good measure ??? || add time elapsed as a factor too
-    if isClosed sI'' && buffer cI == "" then do
-                                        (cI''', tidList'') <- closeSocket (socketD cI'') cI'' tidList
-                                        return ()
-                                        else requestResponseCycle cI'' sI'' tidList
+    -- | make a lock which has cI and sI data
+    termMVar <- newMVar (cI, sI)
+    forkIO $ handleRServer termMVar tidList (socketD sI)
+    forkIO $ handleRClient termMVar tidList (socketD cI)
+    handleWList termMVar tidList
 
 
-handleWList cI sI = withSocketsDo $
+handleRServer termMVar tidList sock = withSocketsDo $
   do
+    msg <- recv sock 1024
+
+    if C.length msg == 0
+       then do
+         (cI,sI) <- takeMVar termMVar
+         (sI', tidList') <- closeSocket sock sI tidList
+         putMVar termMVar (cI, sI')
+       else do
+         (cI,sI) <- takeMVar termMVar
+         let cI' = queue cI (C.unpack msg)
+         putMVar termMVar (cI', sI)
+         handleRServer termMVar tidList sock
+
+
+handleRClient termMVar tidList sock = withSocketsDo $
+  do
+    msg <- recv sock 1024
+
+    (cI, sI) <- takeMVar termMVar
+    if isClosed sI && C.length msg == 0
+       then do
+         return ()
+       else do
+         let sI' = queue sI (C.unpack msg)
+         putMVar termMVar (cI, sI')
+         handleRClient termMVar tidList sock
+
+
+handleWList termMVar tidList = withSocketsDo $
+  do
+    (cI, sI) <- takeMVar termMVar
     cI' <- handleWTerminal cI
     sI' <- handleWTerminal sI
-    return (cI', sI')
+    putMVar termMVar (cI', sI')
 
-handleWTerminal tI = withSocketsDo $
-  do
-    if not (isClosed tI) && buffer tI /= "" then flush tI
-                                            else return tI
-
--- | PROBLEM LIES HERE --------------------------------------------------------########
-handleRList cI sI tidList = withSocketsDo $
-  do
-    (sI', cI', tidList') <- handleRTerminal sI cI tidList
-
-    (cI'', sI'', tidList'') <- handleRTerminal cI sI tidList
-    -- | print the request to the screen
-    tids <- takeMVar tidList''
-    putStrLn ("Server buffer is:\n" ++ buffer sI'')
-    putStrLn ("Client buffer is:\n" ++ buffer cI'')
-    putMVar tidList'' tids
-
-    return (cI'', sI'', tidList'')
-
-
-handleRTerminal rI sI tidList = withSocketsDo $
-  do
-    if not (isClosed sI) then do
-                         msg <- recv (socketD sI) 1024
-                         if C.length msg == 0 && (hType (packetParserInfo sI) /= HttpRequestParser)
-                            then do
-                              (sI', tidList') <- closeSocket (socketD sI) sI tidList
-                              return (rI, sI', tidList')
-                            else do
-                              let rI' = queue rI (C.unpack msg)
-                              return (rI', sI, tidList)
-                         else return (rI, sI, tidList)
+    if isClosed sI' && buffer cI' == ""
+       then do
+         (cI'', tidList') <- closeSocket (socketD cI') cI' tidList
+         return ()
+       else do
+         handleWList termMVar tidList
 
 
 -- | need to repair this function
@@ -241,18 +241,20 @@ queue tI newData = TerminalInfo{
 
 closeSocket conn tI tidList = withSocketsDo $
   do 
-  thisThreadId <- myThreadId
-  tids <- takeMVar tidList
-  let Just entry = Map.lookup thisThreadId tids 
-      fe = fst entry
-  if fe == Just conn then do
-                     close conn
-                     putMVar tidList (updatingMap thisThreadId (Nothing, snd entry) tids)
-                     return (closeSocket' tI, tidList)
-                     else do
-                     close conn
-                     putMVar tidList (updatingMap thisThreadId (fe, Nothing) tids)
-                     return (closeSocket' tI, tidList)
+    close conn
+    return (closeSocket' tI, tidList)
+  {- thisThreadId <- myThreadId -}
+  {- tids <- takeMVar tidList -}
+  {- let Just entry = Map.lookup thisThreadId tids  -}
+      {- fe = fst entry -}
+  {- if fe == Just conn then do -}
+                     {- close conn -}
+                     {- putMVar tidList (updatingMap thisThreadId (Nothing, snd entry) tids) -}
+                     {- return (closeSocket' tI, tidList) -}
+                     {- else do -}
+                     {- close conn -}
+                     {- putMVar tidList (updatingMap thisThreadId (fe, Nothing) tids) -}
+                     {- return (closeSocket' tI, tidList) -}
 
 closeSocket' tI= TerminalInfo{
   buffer = buffer tI
