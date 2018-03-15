@@ -1,8 +1,7 @@
 .DEFAULT_GOAL := build
 
 build: Server.hs
-	@ghc -dynamic -threaded Server.hs -o pgm && \
-	./pgm +RTS -N4
+	@ghc -dynamic -threaded Server.hs -o pgm
 
 .PHONY: clean
 

@@ -1,14 +1,14 @@
 module ThreadProxy where
 
-import Data.Bits
-import Network.Socket hiding (recv, send)
-import Network.BSD
 import System.IO
+import Network.BSD
+import Network.Socket hiding (recv, send)
 import Network.Socket.ByteString (recv, send, sendAll)
 
 import Control.Concurrent
 import Control.Concurrent.MVar
-import Control.Monad (unless, forever, void)
+import System.Timeout (timeout)
+import Control.Exception (try, SomeException)
 
 import qualified Data.Text as T
 import qualified Data.ByteString.Char8 as C
@@ -17,7 +17,7 @@ import Data.Map as Map hiding (drop)
 import HttpParser
 import Common
 
-type TidSocketInfo = Map.Map ThreadId (Maybe Socket, Maybe Socket)   
+type TidSocketInfo = Map.Map ThreadId (Maybe Socket, Maybe Socket)
 
 data TerminalInfo = 
   TerminalInfo {
@@ -53,9 +53,9 @@ processClient (conn, clientaddr) tidList = withSocketsDo $
         return ()
       _ -> processRequest clientInfo' tidList clientaddr
 
-    tids <- takeMVar tidList
-    putStrLn (show (Map.size tids))
-    putMVar tidList tids
+    {- tids <- takeMVar tidList -}
+    {- putStrLn (show (Map.size tids)) -}
+    {- putMVar tidList tids -}
 
 
 processRequest cI tidList clientaddr = withSocketsDo $
@@ -85,7 +85,6 @@ processRequest cI tidList clientaddr = withSocketsDo $
     -- | contruct TerminalInfo for the destination server too
     let sI = emptyTerminal dSock HttpResponseParser
 
-    -- | implement CONNECT method
     case (hMethod hP) of
       "CONNECT" -> do
         let cI' = queue cI (C.pack connectEstKPacket)
@@ -97,62 +96,94 @@ processRequest cI tidList clientaddr = withSocketsDo $
 
 requestResponseCycle cI sI tidList = withSocketsDo $
   do
-    -- | IDEA is to create single write thread for both sockets
-    -- | and two seperate read threads for the server and client
-
-    -- | make a lock which has cI and sI data
     termMVar <- newMVar (cI, sI)
-    tidServ <- forkIO $ handleRServer termMVar tidList (socketD sI)
-    forkIO $ handleRClient termMVar tidList (socketD cI)
-
-    -- | update the tidList to account for the new threads
     thisThreadId <- myThreadId
     tids <- takeMVar tidList
-    let x = Map.lookup thisThreadId tids
-    case x of
-      Nothing -> do
-        putMVar tidList tids
-      Just (csock, ssock) -> do let newTids = Map.insert tidServ (Nothing, ssock) 
-                                        (updatingMap thisThreadId (csock, Nothing) tids)
-                                putMVar tidList newTids
+    putMVar tidList (updatingMap thisThreadId (Just (socketD cI), Nothing) tids)
+    requestResponseCycle' termMVar tidList (socketD sI) (socketD cI)
+
+
+requestResponseCycle' termMVar tidList ssock csock = withSocketsDo $
+  do
+    resp1 <- try (timeout 500 (recv ssock 2)) :: IO (Either SomeException (Maybe C.ByteString))
+    case resp1 of
+      Left e -> return ()
+      Right msg1 -> do
+        case msg1 of
+          Nothing -> return ()
+          Just x -> do
+            thisThreadId <- myThreadId
+            tids <- takeMVar tidList
+            tidServ <- forkIO $ handleRServer termMVar tidList ssock x
+            let y = Map.lookup thisThreadId tids
+            case y of
+              Nothing -> do
+                putMVar tidList tids
+              Just (csock', ssock') -> do let newTids = Map.insert tidServ
+                                                (Nothing, Just ssock) tids
+                                          putMVar tidList newTids
+
+
+    resp2 <- try (timeout 500 (recv csock 2)) :: IO (Either SomeException (Maybe C.ByteString))
+    case resp2 of
+      Left e -> return ()
+      Right msg2 -> do
+        case msg2 of
+          Nothing -> return ()
+          Just x -> do
+            forkIO $ handleRClient termMVar tidList csock x
+            return ()
 
     -- | continue the write process in this thread only
-    handleWList termMVar tidList
+    handleWList termMVar tidList ssock csock
 
 
-handleRServer termMVar tidList sock = withSocketsDo $
+handleRServer termMVar tidList sock initMsg = withSocketsDo $
   do
-    msg <- recv sock receiveSize
-
-    if C.length msg == 0
+    if C.length initMsg == 0
        then do
          -- | update the socket status to closed
          (cI,sI) <- takeMVar termMVar
          (sI', tidList') <- closeSocket sock sI tidList
          putMVar termMVar (cI, sI')
        else do
-         (cI,sI) <- takeMVar termMVar
-         let cI' = queue cI msg
-         putMVar termMVar (cI', sI)
-         handleRServer termMVar tidList sock
+         resp <- try (recv sock receiveSize) :: IO (Either SomeException C.ByteString)
+         case resp of
+           Left e -> do
+             (cI,sI) <- takeMVar termMVar
+             let cI' = queue cI initMsg
+             putMVar termMVar (cI', sI)
+           Right msg -> do
+             (cI,sI) <- takeMVar termMVar
+             let cI' = queue cI (C.append initMsg msg)
+             putMVar termMVar (cI', sI)
+             if C.length msg == 0
+                then do
+                  (cI,sI) <- takeMVar termMVar
+                  (sI', tidList') <- closeSocket sock sI tidList
+                  putMVar termMVar (cI, sI')
+                else return ()
 
 
-handleRClient termMVar tidList sock = withSocketsDo $
+handleRClient termMVar tidList sock initMsg = withSocketsDo $
   do
-    msg <- recv sock receiveSize
-
-    if C.length msg == 0
+    if C.length initMsg == 0
        then do
-         (cI, sI) <- takeMVar termMVar
-         putMVar termMVar (cI, sI)
+         return ()
        else do
-         (cI, sI) <- takeMVar termMVar
-         let sI' = queue sI msg
-         putMVar termMVar (cI, sI')
-         handleRClient termMVar tidList sock
+         resp <- try (recv sock receiveSize) :: IO (Either SomeException C.ByteString)
+         case resp of
+           Left e -> do
+             (cI,sI) <- takeMVar termMVar
+             let sI' = queue sI initMsg
+             putMVar termMVar (cI, sI')
+           Right msg -> do
+             (cI,sI) <- takeMVar termMVar
+             let sI' = queue sI (C.append initMsg msg)
+             putMVar termMVar (cI, sI')
 
 
-handleWList termMVar tidList = withSocketsDo $
+handleWList termMVar tidList ssock csock = withSocketsDo $
   do
     (cI, sI) <- takeMVar termMVar
     cI' <- handleWTerminal cI
@@ -167,7 +198,7 @@ handleWList termMVar tidList = withSocketsDo $
          (cI''', tidList') <- closeSocket (socketD cI'') cI'' tidList
          return ()
        else do
-         handleWList termMVar tidList
+         requestResponseCycle' termMVar tidList ssock csock
 
 
 handleWTerminal tI = withSocketsDo $
@@ -177,7 +208,6 @@ handleWTerminal tI = withSocketsDo $
        else return tI
 
 
--- | need to repair this function
 getRequestPacket cI = withSocketsDo $
   do
     msg <- recv (socketD cI) receiveSize
@@ -255,25 +285,31 @@ closeSocket conn tI tidList = withSocketsDo $
   do 
   thisThreadId <- myThreadId
   tids <- takeMVar tidList
-  let Just entry = Map.lookup thisThreadId tids
-      (fe, se) = entry
-  if fe == Just conn 
-     then do
-       close conn
-       if se == Nothing
-          then do
-            putMVar tidList (delete thisThreadId tids)
-          else do
-            putMVar tidList (updatingMap thisThreadId (Nothing, se) tids)
-       return (closeSocket' tI, tidList)
-     else do
-       close conn
-       if fe == Nothing
-          then do
-            putMVar tidList (delete thisThreadId tids)
-          else do
-            putMVar tidList (updatingMap thisThreadId (fe, Nothing) tids)
-       return (closeSocket' tI, tidList)
+  let entry = Map.lookup thisThreadId tids
+  case entry of 
+    Nothing -> do
+      -- | This case will happen when an exception is raised (in recv data from server) of a thread that does not have an entry in MVar
+      putStrLn "ERROR: SOCKET IS TO BE CLOSED FROM THREAD WHOSE ENTRY IS NOT IN MVAR LIST !!!!"
+      putMVar tidList tids
+      return (tI, tidList)
+    Just (fe, se) ->
+      if fe == Just conn 
+         then do
+           close conn
+           if se == Nothing
+              then do
+                putMVar tidList (delete thisThreadId tids)
+              else do
+                putMVar tidList (updatingMap thisThreadId (Nothing, se) tids)
+           return (closeSocket' tI, tidList)
+         else do
+           close conn
+           if fe == Nothing
+              then do
+                putMVar tidList (delete thisThreadId tids)
+              else do
+                putMVar tidList (updatingMap thisThreadId (fe, Nothing) tids)
+           return (closeSocket' tI, tidList)
 
 
 closeSocket' tI= TerminalInfo{
@@ -288,8 +324,10 @@ closeSocket' tI= TerminalInfo{
 
 flush tI = withSocketsDo $
   do
-    x <- send (socketD tI) (buffer tI)
-    return TerminalInfo{
+    resp <- try (send (socketD tI) (buffer tI)) :: IO (Either SomeException Int)
+    case resp of
+      Left e -> return tI  -- can we imply that the socket has been closed
+      Right x -> return TerminalInfo{
               buffer = C.drop x (buffer tI)
             , socketD = socketD tI
             , packetParserInfo = packetParserInfo tI
