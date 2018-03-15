@@ -1,0 +1,53 @@
+\documentclass{article}
+\usepackage[utf8]{inputenc}
+\usepackage{geometry}
+ \geometry{
+ a4paper,
+ total={170mm,257mm},
+ left=20mm,
+ top=10mm,
+ }
+ 
+
+\title{PROXY SERVER \\ CS653 Project}
+\author{Manish Kumar \\ Roll : 150379}
+\date{March 2018}
+
+\usepackage{natbib}
+\usepackage{graphicx}
+\usepackage{listings}
+
+\begin{document}
+
+\maketitle
+
+\section*{About the Project}
+Proxy Server is a computer system or an application that acts as an intermediary for client requesting for some resource from other servers. Web proxies provide anonymity and can be used to bypass IP address blocking.\\\\
+Web proxies forward HTTP requests to the destination server and return the response to the client. They can also be used to filter out requests to some sites and can make stricter policies on the kind of requests that are entertained.
+
+\section*{Deliverable}
+A Web proxy application that could serve HTTP / HTTPS requests but allows the administrator to predefine (in the code) any HTTP methods that should not be allowed.\\\\
+
+In addition to that, it should do the following:
+\begin{itemize}
+    \item Allowed HTTP methods include GET, POST, HEAD, CONNECT.
+    \item \textbf{Domain Filtering:} Filter out domain names / ip address that are provided in arguments at the time of launch. In such cases the client should receive “Bad Request” response.
+    \item In case the code is made to neglect certain HTTP methods, HTTP status code 405 (Method not allowed) is to be sent to the client.
+    \item It should forward appropriate HTTP requests to the destination server and the responses back to the client.
+    \item If “Host: xyz” is not found then send a “Bad Request” back to client.
+    \item It should be a \textbf{concurrent server}.
+    \item It should be resistant to malicious activity from client side to shut it down.
+    \item It should not be killed by SIGINT signal. And upon encountering the signal SIGUSR1, it should print out the statistics about the number of requests successfully processed, filtered, resulted in error, etc. Also it should exit gracefully when seeing a SIGUSR2 signal.
+\end{itemize}
+
+\section*{Task Time Estimates}
+\begin{itemize}
+    \item $1^{st}$ week of March \hspace{2mm}$\longrightarrow$ \hspace{2mm} build basic server
+    \item $2^{nd}$ week of March \hspace{1mm}$\longrightarrow$ \hspace{2mm} add domain filtering options
+    \item $3^{rd}$ week of March \hspace{1.2mm}$\longrightarrow$ \hspace{2mm} add https method and chunk parsing
+    \item $1^{st}$ week of April \hspace{3mm}$\longrightarrow$ \hspace{2mm} make it a concurrent server
+    \item $2^{nd}$ week of April \hspace{3mm}$\longrightarrow$ \hspace{2mm} add statistics feature
+    \item $3^{rd}$ week of April \hspace{3mm}$\longrightarrow$ \hspace{2mm} handle signals to direct specific functions
+\end{itemize}
+
+\end{document}
