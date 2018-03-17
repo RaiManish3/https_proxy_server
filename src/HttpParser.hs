@@ -5,14 +5,12 @@ import qualified Data.Text as T
 
 import Data.List
 import qualified Data.Map as Map
+import Hex (unhex)
 
 
 type HttpData = String
 
-{- TODO :: ChunkParser and allowedMethods and Host Check-}
-
 -- |  data types ----------------------------------------------------
---
 data HttpParserTypes = HttpRequestParser
                      | HttpResponseParser
                      deriving (Show, Eq)
@@ -42,6 +40,8 @@ data HttpPacket =
   , hHeaders :: Map.Map HttpData (HttpData, HttpData)
   , hBody :: HttpData
   , hBodySize :: Int
+  , hChunked :: Bool
+  , hChunker :: ChunkerInfo
   }
   deriving Show
 
@@ -53,18 +53,16 @@ data ChunkerState = WaitingForSize
 data ChunkerInfo =
   ChunkerInfo{
     cState :: ChunkerState
-  , cBody :: HttpData
   , cChunk :: HttpData
+  , cRemain :: HttpData
   , cSize :: Int
   }
   deriving Show
-
 -- |  data types ----------------------------------------------------
 
 
 
 -- | helper functions -----------------------------------------------
---
 buildParserInfo :: (HttpParserTypes, HttpParserState) -> HttpParserInfo
 buildParserInfo (x, y) = 
   HttpParserInfo {
@@ -82,12 +80,33 @@ splitter xs = splitter' "" xs
 
 textStripper :: T.Text -> String
 textStripper = T.unpack . T.strip
-
 -- | helper functions -----------------------------------------------
 
 
+emptyHttpParserInfo hT = buildParserInfo (hT, Initialised)
+
+emptyHttpPacket = HttpPacket {
+     hMethod = ""
+   , hUrl = ""
+   , hVersion = ""
+   , hStatusCode = ""
+   , hStatus = ""
+   , hHeaders = Map.empty
+   , hBody = ""
+   , hBodySize = 0
+   , hChunked = False
+   , hChunker = emptyChunker
+   }
+
+emptyChunker = ChunkerInfo{
+    cState = WaitingForSize
+  , cChunk = ""
+  , cRemain = ""
+  , cSize = 0
+}
+
+
 -- | Parse First Line -----------------------------------------------
---
 parseFirstLine xs hI hP | length xs == 0 = (hI, hP)
   | otherwise = let xs' = T.pack xs
                     x = T.splitOn (T.pack " ") xs'
@@ -107,6 +126,8 @@ parseFirstLine' xs hP = HttpPacket {
    , hHeaders = hHeaders hP
    , hBody = hBody hP
    , hBodySize = hBodySize hP
+   , hChunked = hChunked hP
+   , hChunker = hChunker hP
    }
 
 parseFirstLine'' :: [T.Text] -> HttpPacket -> HttpPacket
@@ -119,13 +140,13 @@ parseFirstLine'' xs hP = HttpPacket {
    , hHeaders = hHeaders hP
    , hBody = hBody hP
    , hBodySize = hBodySize hP
+   , hChunked = hChunked hP
+   , hChunker = hChunker hP
    }
-
 -- | Parse First Line -----------------------------------------------
 
 
 -- | Parse Headers --------------------------------------------------
---
 parseHeaders xs hI hP | length xs == 0 = parseHeaders'' hI hP
   | otherwise = (buildParserInfo (hType hI, ReceivingHeaders), parseHeaders' ys hP)
                       where ys' = T.pack xs
@@ -141,12 +162,22 @@ parseHeaders' (x:xs) hP = HttpPacket {
    , hHeaders = Map.insert (textStripper . T.toLower $ x) (textStripper x, textStripper . T.intercalate (T.pack ":") $ xs) (hHeaders hP)
    , hBody = hBody hP
    , hBodySize = hBodySize hP
+   , hChunked = hChunked hP
+   , hChunker = hChunker hP
    } 
 
-parseHeaders'' hI hP = let x = Map.lookup "content-length" (hHeaders hP)
-                       in case x of
-                            Just y -> (buildParserInfo (hType hI, ReceivedHeaders), parseHeaders''' (read (snd y) :: Int) hP)
-                            Nothing -> (buildParserInfo (hType hI, ReceivedBody), hP)
+parseHeaders'' hI hP =
+  let x = Map.lookup "content-length" (hHeaders hP)
+   in case x of
+        Just y -> (buildParserInfo (hType hI, ReceivedHeaders), parseHeaders''' (read (snd y) :: Int) hP)
+        Nothing -> let y = Map.lookup "transfer-encoding" (hHeaders hP)
+                    in case y of
+                         Nothing -> (buildParserInfo (hType hI, ReceivedBody), hP)
+                         Just z -> if (T.toLower . T.pack $ (snd z)) == T.pack "chunked"
+                                      then
+                                      (buildParserInfo (hType hI, ReceivedHeaders), parseHeaders'''' hP)
+                                      else
+                                      (buildParserInfo (hType hI, ReceivedBody), hP)
 
 parseHeaders''' x hP = HttpPacket{
      hMethod = hMethod hP
@@ -157,13 +188,32 @@ parseHeaders''' x hP = HttpPacket{
    , hHeaders = hHeaders hP
    , hBody = hBody hP
    , hBodySize = x
+   , hChunked = hChunked hP
+   , hChunker = hChunker hP
    } 
 
+parseHeaders'''' hP = HttpPacket{
+     hMethod = hMethod hP
+   , hUrl = hUrl hP
+   , hVersion = hVersion hP
+   , hStatusCode = hStatusCode hP
+   , hStatus = hStatus hP
+   , hHeaders = hHeaders hP
+   , hBody = hBody hP
+   , hBodySize = hBodySize hP
+   , hChunked = True
+   , hChunker = hChunker hP
+  }
 -- | Parse Headers --------------------------------------------------
 
+
 -- | Parse Body    --------------------------------------------------
---
-parseBody xs hI hP | hBodySize hP == 0 = (buildParserInfo (hType hI, ReceivedBody), hP)
+parseBody xs hI hP 
+  | hChunked hP = let hP' = processChunk xs hP
+                   in if cState (hChunker hP') == Complete
+                         then (buildParserInfo (hType hI, ReceivedBody), hP')
+                         else (buildParserInfo (hType hI, ReceivingBody), hP')
+  | hBodySize hP == 0 = (buildParserInfo (hType hI, ReceivedBody), hP)
   | otherwise = (buildParserInfo (hType hI, ReceivingBody), parseBody' xs hP)
 
 parseBody' xs hP = HttpPacket {
@@ -175,10 +225,10 @@ parseBody' xs hP = HttpPacket {
    , hHeaders = hHeaders hP
    , hBody = hBody hP ++ xs
    , hBodySize = hBodySize hP - length xs
+   , hChunked = hChunked hP
+   , hChunker = hChunker hP
    }
-
 -- | Parse Body    --------------------------------------------------
-
 
 
 rootParser xs hI hP = let (y, ys) = splitter xs
@@ -204,31 +254,13 @@ rootParser' xs hI hP = case hState hI of
                                in (hI', hP')
 
 
-emptyHttpParserInfo hT = buildParserInfo (hT, Initialised)
-
-emptyHttpPacket = HttpPacket {
-     hMethod = ""
-   , hUrl = ""
-   , hVersion = ""
-   , hStatusCode = ""
-   , hStatus = ""
-   , hHeaders = Map.empty
-   , hBody = ""
-   , hBodySize = 0
-   }
-
-emptyChunker = ChunkerInfo{
-    cState = WaitingForSize
-  , cBody = ""
-  , cChunk = ""
-  , cSize = 0
-}
 
 {- buildUrl url | "http" /= (T.unpack . T.toLower . T.pack $ (drop 4 url)) = url -}
 {-   | otherwise = f -}
 {-   where f = let x = dropWhile (/= '/') $ drop 7 url -}
 {-              in if x == "" then "/" -}
 {-                            else x -}
+
 buildUrl url = url
 
 buildHeader [] _ [] = ""
@@ -249,11 +281,51 @@ scanner xs hI hP | hState hI == ReceivedBody = (xs, hI, hP)
   where (y, ys, hI', hP') = rootParser xs hI hP
 
 
-{- processChunk xs cI | cState cI == WaitingForSize = processChunkSize xs cI -}
-{-   | otherwise = processChunkData xs cI -}
+-- |  Chunk Parsing  ----------------------------------------------------
+processChunk xs hP | cState cI == WaitingForSize = processChunkSize xs hP
+  | otherwise = processChunkData xs hP
+  where cI = hChunker hP
 
-{- processChunkSize xs cI = let (y, ys) = splitter xs -}
-{-                              f n = C. -}
-{-                           in case y of -}
-{-                                Nothing -> (xs, cI) -}
-{-                                Just yy -> (ys, f yy) -}
+processChunkSize xs hP = 
+  let cI = hChunker hP
+      (y, ys) = splitter (cRemain cI ++ xs)
+   in case y of
+        Nothing -> modifyChunker hP WaitingForSize "" (cRemain cI ++ xs) 0 ""
+        Just yy -> modifyChunker hP WaitingForData "" ys (unhex yy) ""
+
+
+processChunkData xs hP =
+  let cI = hChunker hP
+      prevchunk = cChunk cI
+      tChunkSize = cSize cI - length prevchunk
+      cData = take tChunkSize xs
+      leftOver = drop tChunkSize xs
+   in if length cData == tChunkSize
+         then
+         if cSize cI /= 0
+            then modifyChunker hP WaitingForSize "" (drop 2 leftOver) 0 (prevchunk ++ cData)
+            else modifyChunker hP Complete "" "" 0  (prevchunk ++ cData)
+         else
+            modifyChunker hP WaitingForData (prevchunk ++ cData) leftOver (cSize cI) ""
+
+
+modifyChunker hP st ch rem size bd = HttpPacket {
+   hMethod = hMethod hP
+ , hUrl = hUrl hP
+ , hVersion = hVersion hP
+ , hStatusCode = hStatusCode hP
+ , hStatus = hStatus hP
+ , hHeaders = hHeaders hP
+ , hBody = hBody hP ++ bd
+ , hBodySize = hBodySize hP
+ , hChunked = hChunked hP
+ , hChunker = modifyChunker' (hChunker hP) st ch rem size
+ }
+
+modifyChunker' cI st ch rem size = ChunkerInfo{
+    cState = st
+  , cChunk = ch
+  , cRemain = rem
+  , cSize = size
+  }
+-- |  Chunk Parsing  ----------------------------------------------------

@@ -1,5 +1,6 @@
 module ParserTest where
 
+-- TODO :: convert this project into a package
 import HttpParser
 
 xxx = scanner "GET /hello.htm HTTP/1.1\r\nUser-Agent: Mozilla/4.0 (compatible; MSIE5.01; Windows NT)\r\nHost: www.tutorialspoint.com\r\nAccept-Language: en-us\r\nAccept-Encoding: gzip, deflate\r\nConnection:Close\r\nContent-Length:4\r\n\r\n" (emptyHttpParserInfo HttpRequestParser) emptyHttpPacket

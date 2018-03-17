@@ -1,3 +1,5 @@
+SRC=src
+
 .DEFAULT_GOAL := build
 
 build: Server.hs
