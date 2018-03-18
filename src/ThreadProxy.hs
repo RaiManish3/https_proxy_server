@@ -42,20 +42,24 @@ processClient (conn, clientaddr) tidList = withSocketsDo $
     let clientInfo = emptyTerminal conn HttpRequestParser
 
     -- | recv the request from client and parse it completely
-    clientInfo' <- getRequestPacket clientInfo
+    (clientInfo', allGood) <- getRequestPacket clientInfo
 
     -- | check whether headers satisfy your criteria
     -- | in case of error send the appropriate error packet back to the client
-    flagHeaders <- checkHeaderErrors (packetData clientInfo') conn tidList
-    case flagHeaders of
-      False -> do
-        closeSocket conn clientInfo' tidList
+    if allGood 
+       then do
+       flagHeaders <- checkHeaderErrors (packetData clientInfo') conn tidList
+       case flagHeaders of
+         False -> do
+           closeSocket conn clientInfo' tidList
+           return ()
+         _ -> processRequest clientInfo' tidList clientaddr
+      else
         return ()
-      _ -> processRequest clientInfo' tidList clientaddr
 
-    {- tids <- takeMVar tidList -}
-    {- putStrLn (show (Map.size tids)) -}
-    {- putMVar tidList tids -}
+    tids <- takeMVar tidList
+    putStrLn (show (Map.size tids))
+    putMVar tidList tids
 
 
 processRequest cI tidList clientaddr = withSocketsDo $
@@ -80,18 +84,20 @@ processRequest cI tidList clientaddr = withSocketsDo $
     addrInfo <- getAddrInfo (Just hints) (Just hostname) (Just port)
     let destAddr = head addrInfo
     dSock <- socket (addrFamily destAddr) (addrSocketType destAddr) (addrProtocol destAddr)
-    connect dSock (addrAddress destAddr)
+    x <- try (connect dSock (addrAddress destAddr)) :: IO (Either SomeException ())
+    case x of
+      Left e -> return ()
+      Right x' -> do
+        -- | contruct TerminalInfo for the destination server too
+        let sI = emptyTerminal dSock HttpResponseParser
 
-    -- | contruct TerminalInfo for the destination server too
-    let sI = emptyTerminal dSock HttpResponseParser
-
-    case (hMethod hP) of
-      "CONNECT" -> do
-        let cI' = queue cI (C.pack connectEstKPacket)
-        requestResponseCycle cI' sI tidList
-      _ -> do
-        let sI' = queue sI (C.pack (buildPacket hP ["proxy-connection","connection","keep-alive"] [("Connection","Close")]))
-        requestResponseCycle cI sI' tidList
+        case (hMethod hP) of
+          "CONNECT" -> do
+            let cI' = queue cI (C.pack connectEstKPacket)
+            requestResponseCycle cI' sI tidList
+          _ -> do
+            let sI' = queue sI (C.pack (buildPacket hP ["proxy-connection","connection","keep-alive"] [("Connection","Close")]))
+            requestResponseCycle cI sI' tidList
 
 
 requestResponseCycle cI sI tidList = withSocketsDo $
@@ -152,6 +158,7 @@ handleRServer termMVar tidList sock initMsg = withSocketsDo $
            Left e -> do
              (cI,sI) <- takeMVar termMVar
              let cI' = queue cI initMsg
+             (sI', tidList') <- closeSocket sock sI tidList  -- close the socket
              putMVar termMVar (cI', sI)
            Right msg -> do
              (cI,sI) <- takeMVar termMVar
@@ -175,8 +182,8 @@ handleRClient termMVar tidList sock initMsg = withSocketsDo $
          case resp of
            Left e -> do
              (cI,sI) <- takeMVar termMVar
-             let sI' = queue sI initMsg
-             putMVar termMVar (cI, sI')
+             (cI', tidList') <- closeSocket sock cI tidList  -- close the socket
+             putMVar termMVar (cI', sI)
            Right msg -> do
              (cI,sI) <- takeMVar termMVar
              let sI' = queue sI (C.append initMsg msg)
@@ -186,37 +193,49 @@ handleRClient termMVar tidList sock initMsg = withSocketsDo $
 handleWList termMVar tidList ssock csock = withSocketsDo $
   do
     (cI, sI) <- takeMVar termMVar
-    cI' <- handleWTerminal cI
-    putMVar termMVar (cI', sI)
-
-    (cI'', sI') <- takeMVar termMVar
-    sI'' <- handleWTerminal sI'
-    putMVar termMVar (cI'', sI'')
-
-    if isClosed sI'' && C.null (buffer cI'')
+    if isClosed cI
        then do
-         (cI''', tidList') <- closeSocket (socketD cI'') cI'' tidList
+         putMVar termMVar (cI, sI)
          return ()
        else do
-         requestResponseCycle' termMVar tidList ssock csock
+         (cI', tidList') <- handleWTerminal cI tidList
+         putMVar termMVar (cI', sI)
+         if isClosed cI'
+            then
+              return ()
+            else do
+              (cI'', sI') <- takeMVar termMVar
+              (sI'', tidList'') <- handleWTerminal sI' tidList'
+              putMVar termMVar (cI'', sI'')
+              if isClosed sI'' && C.null (buffer cI'')
+                 then do
+                   -- | should use lock here ???
+                   (cI''', tidList') <- closeSocket (socketD cI'') cI'' tidList
+                   return ()
+                   else
+                   requestResponseCycle' termMVar tidList ssock csock
 
 
-handleWTerminal tI = withSocketsDo $
+handleWTerminal tI tidList = withSocketsDo $
   do
     if not (isClosed tI || C.null (buffer tI))
-       then flush tI
-       else return tI
+       then flush tI tidList
+       else return (tI, tidList)
 
 
 getRequestPacket cI = withSocketsDo $
   do
-    msg <- recv (socketD cI) receiveSize
-    let hI = packetParserInfo cI
-        hP = packetData cI 
-        (leftover, hI', hP') = scanner (stillToProcess cI ++ C.unpack msg) hI hP
-        cI' = updateInfoAndPacket cI leftover hI' hP'
-    if hState hI' /= ReceivedBody then getRequestPacket cI'
-                                  else return cI'
+    resp <- try (recv (socketD cI) receiveSize) :: IO (Either SomeException C.ByteString)
+    case resp of
+      Left e -> return (cI, False)
+      Right msg -> do
+        let hI = packetParserInfo cI
+            hP = packetData cI 
+            (leftover, hI', hP') = scanner (stillToProcess cI ++ C.unpack msg) hI hP
+            cI' = updateInfoAndPacket cI leftover hI' hP'
+        if hState hI' /= ReceivedBody
+           then getRequestPacket cI'
+           else return (cI', True)
 
 
 checkHeaderErrors hP conn tidList = withSocketsDo $
@@ -288,8 +307,9 @@ closeSocket conn tI tidList = withSocketsDo $
   let entry = Map.lookup thisThreadId tids
   case entry of 
     Nothing -> do
-      -- | This case will happen when an exception is raised (in recv data from server) of a thread that does not have an entry in MVar
-      putStrLn "ERROR: SOCKET IS TO BE CLOSED FROM THREAD WHOSE ENTRY IS NOT IN MVAR LIST !!!!"
+      -- | This case will happen when an exception is raised 
+      --   (in recv data from server) of a thread that does not 
+      --   have an entry in MVar
       putMVar tidList tids
       return (tI, tidList)
     Just (fe, se) ->
@@ -322,18 +342,20 @@ closeSocket' tI= TerminalInfo{
 }
   
 
-flush tI = withSocketsDo $
+flush tI tidList = withSocketsDo $
   do
     resp <- try (send (socketD tI) (buffer tI)) :: IO (Either SomeException Int)
     case resp of
-      Left e -> return tI  -- can we imply that the socket has been closed
-      Right x -> return TerminalInfo{
+      Left e -> do
+        (tI', tidList') <- closeSocket (socketD tI) tI tidList
+        return (tI', tidList')
+      Right x -> return (TerminalInfo{
               buffer = C.drop x (buffer tI)
             , socketD = socketD tI
             , packetParserInfo = packetParserInfo tI
             , packetData = packetData tI
             , stillToProcess = stillToProcess tI
             , isClosed = isClosed tI
-            }
+           }, tidList)
 
 receiveSize = 8192

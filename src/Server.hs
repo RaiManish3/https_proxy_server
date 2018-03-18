@@ -6,9 +6,7 @@ import Network.BSD
 import System.IO
 
 import Control.Concurrent
--- import qualified Control.Concurrent.Thread as Thread  -- not installed yet
 import Control.Concurrent.MVar
-import Control.Monad (forever)
 import System.Posix.Process (getProcessID)
 
 import System.Exit
@@ -24,12 +22,10 @@ main = do
   tidList <- newMVar Map.empty
   pid <- getProcessID
   maintid <- myThreadId
-
   putStrLn ("Server's Process ID: " ++ show pid)
 
   let port = "8888"
       backlog = 5
-
   hostSocket port backlog tidList maintid
 
 
@@ -58,11 +54,10 @@ hostSocket port backlog tidList maintid = withSocketsDo $
 
     installHandler sigUSR1 (Catch $ handlerSIGUSR1 tidList) Nothing
     installHandler sigUSR2 (CatchOnce $ handlerSIGUSR2 tidList sock) Nothing
+    -- | TODO :: Disable sigInt later
     {- installHandler sigINT Ignore Nothing -}
 
     listenForClient sock tidList
-    --  Should not reach here
-    close sock
 
 
 listenForClient :: Socket -> MVar TidSocketInfo -> IO()
@@ -76,6 +71,7 @@ handlerSIGUSR1 :: MVar TidSocketInfo -> IO ()
 handlerSIGUSR1 tidList = do
   tids <- takeMVar tidList
   putStrLn "SIGUSR1 hit -- print statistics"
+  -- | TODO
   putMVar tidList tids
 
 handlerSIGUSR2 :: MVar TidSocketInfo -> Socket -> IO ()
@@ -83,6 +79,7 @@ handlerSIGUSR2 tidList mainSocket = do
   tids <- takeMVar tidList
   putStrLn "Encountered SIGUSR2 signal ..."
   putStrLn "Exiting gracefully"
+  -- | close all the sockets and then exit
   closeSocketLoop (Map.elems tids)
   close mainSocket
   putMVar tidList Map.empty

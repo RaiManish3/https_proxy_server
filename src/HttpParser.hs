@@ -10,7 +10,7 @@ import Hex (unhex)
 
 type HttpData = String
 
--- |  data types ----------------------------------------------------
+-- |  DATA TYPES  ----------------------------------------------------
 data HttpParserTypes = HttpRequestParser
                      | HttpResponseParser
                      deriving (Show, Eq)
@@ -58,11 +58,11 @@ data ChunkerInfo =
   , cSize :: Int
   }
   deriving Show
--- |  data types ----------------------------------------------------
+-- |  DATA TYPES  ----------------------------------------------------
 
 
 
--- | helper functions -----------------------------------------------
+-- | HELPER FUNCTIONS  -----------------------------------------------
 buildParserInfo :: (HttpParserTypes, HttpParserState) -> HttpParserInfo
 buildParserInfo (x, y) = 
   HttpParserInfo {
@@ -80,9 +80,10 @@ splitter xs = splitter' "" xs
 
 textStripper :: T.Text -> String
 textStripper = T.unpack . T.strip
--- | helper functions -----------------------------------------------
+-- | HELPER FUNCTIONS  -----------------------------------------------
 
 
+-- | INITIAL CONFIGS  -----------------------------------------------
 emptyHttpParserInfo hT = buildParserInfo (hT, Initialised)
 
 emptyHttpPacket = HttpPacket {
@@ -104,6 +105,7 @@ emptyChunker = ChunkerInfo{
   , cRemain = ""
   , cSize = 0
 }
+-- | INITIAL CONFIGS  -----------------------------------------------
 
 
 -- | Parse First Line -----------------------------------------------
