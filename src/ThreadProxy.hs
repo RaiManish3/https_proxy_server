@@ -10,7 +10,6 @@ import Control.Concurrent.MVar
 import System.Timeout (timeout)
 import Control.Exception (try, SomeException)
 
-import qualified Data.Text as T
 import qualified Data.ByteString.Char8 as C
 
 import Data.Map as Map hiding (drop)
@@ -30,8 +29,8 @@ data TerminalInfo =
    }
    deriving Show
 
-processClient :: (Socket, SockAddr) -> MVar TidSocketInfo -> IO ()
-processClient (conn, clientaddr) tidList = withSocketsDo $
+processClient :: (Socket, SockAddr) -> MVar TidSocketInfo -> [String] -> IO ()
+processClient (conn, clientaddr) tidList args = withSocketsDo $
   do
     -- | initialise data structures and populate the TidSocketInfo
     thisThreadId <- myThreadId
@@ -48,7 +47,7 @@ processClient (conn, clientaddr) tidList = withSocketsDo $
     -- | in case of error send the appropriate error packet back to the client
     if allGood 
        then do
-       flagHeaders <- checkHeaderErrors (packetData clientInfo') conn tidList
+       flagHeaders <- checkHeaderErrors (packetData clientInfo') conn tidList args
        case flagHeaders of
          False -> do
            closeSocket conn clientInfo' tidList
@@ -238,7 +237,7 @@ getRequestPacket cI = withSocketsDo $
            else return (cI', True)
 
 
-checkHeaderErrors hP conn tidList = withSocketsDo $
+checkHeaderErrors hP conn tidList args = withSocketsDo $
   do
     let hasHostHeader = Map.member "host" (hHeaders hP)
     case hasHostHeader of
@@ -254,7 +253,7 @@ checkHeaderErrors hP conn tidList = withSocketsDo $
                        sendAll conn (C.pack badRequestPacket)
                        return False
                      _ -> let Just x = Map.lookup "host" (hHeaders hP)
-                           in case checkBlocked (snd x) of
+                           in case checkBlocked (snd x) args of
                                 True -> do
                                   tids <- takeMVar tidList
                                   putStrLn (hMethod hP ++ hUrl hP ++ " [FILTERED]")
@@ -268,7 +267,7 @@ updatingMap k v m = update (\_ -> Just v) k m
 
 checkMethod xs = xs `elem` allowedMethods
 checkVersion xs = xs `elem` allowedVersion
-checkBlocked y = checkBlocked' blockedDomain
+checkBlocked y zs = checkBlocked' zs
   where checkBlocked' [] = False
         checkBlocked' (x:xs) | x == y = True                    -- make it more expressive
           | otherwise = checkBlocked' xs

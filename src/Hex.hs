@@ -1,5 +1,5 @@
 {-# LANGUAGE TypeSynonymInstances #-}
-module Hex where
+module Hex (unhex) where
 
 unhex :: String -> Int
 unhex xs = unhex' (reverse xs) 0

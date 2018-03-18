@@ -38,5 +38,3 @@ connectEstKPacket = "HTTP/1.1 200 Connection established\r\nProxy-agent:proxySer
 
 allowedMethods = ["GET", "POST", "HEAD", "CONNECT"]
 allowedVersion = ["HTTP/1.1","HTTP/1.0"]
-
-blockedDomain = []

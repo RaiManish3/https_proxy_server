@@ -10,6 +10,7 @@ import Control.Concurrent.MVar
 import System.Posix.Process (getProcessID)
 
 import System.Exit
+import System.Environment (getArgs)
 import System.Posix.Signals (installHandler, Handler(..), sigINT, sigUSR1, sigUSR2)
 import System.Posix.Process
 
@@ -19,6 +20,7 @@ import ThreadProxy
 
 main :: IO ()
 main = do
+  args <- getArgs
   tidList <- newMVar Map.empty
   pid <- getProcessID
   maintid <- myThreadId
@@ -26,14 +28,14 @@ main = do
 
   let port = "8888"
       backlog = 5
-  hostSocket port backlog tidList maintid
+  hostSocket port backlog tidList maintid args
 
 
 type Port = String
 type BackLog = Int
 
-hostSocket :: Port -> BackLog -> MVar TidSocketInfo -> ThreadId -> IO ()
-hostSocket port backlog tidList maintid = withSocketsDo $
+hostSocket :: Port -> BackLog -> MVar TidSocketInfo -> ThreadId -> [String] -> IO ()
+hostSocket port backlog tidList maintid args = withSocketsDo $
   do
     let hints = defaultHints {
             addrFlags = [AI_PASSIVE]
@@ -57,14 +59,14 @@ hostSocket port backlog tidList maintid = withSocketsDo $
     -- | TODO :: Disable sigInt later
     {- installHandler sigINT Ignore Nothing -}
 
-    listenForClient sock tidList
+    listenForClient sock tidList args
 
 
-listenForClient :: Socket -> MVar TidSocketInfo -> IO()
-listenForClient sock tidList = withSocketsDo $ do
+listenForClient :: Socket -> MVar TidSocketInfo -> [String] -> IO()
+listenForClient sock tidList args = withSocketsDo $ do
   (conn , peer) <- accept sock
-  tid <- forkIO $ processClient (conn, peer) tidList
-  listenForClient sock tidList
+  tid <- forkIO $ processClient (conn, peer) tidList args
+  listenForClient sock tidList args
 
 
 handlerSIGUSR1 :: MVar TidSocketInfo -> IO ()
