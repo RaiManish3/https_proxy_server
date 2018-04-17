@@ -15,6 +15,7 @@ import qualified Data.ByteString.Char8 as C
 import Data.Map as Map hiding (drop)
 import HttpParser
 import Common
+import Stats
 
 type TidSocketInfo = Map.Map ThreadId (Maybe Socket, Maybe Socket)
 
@@ -29,8 +30,8 @@ data TerminalInfo =
    }
    deriving Show
 
-processClient :: (Socket, SockAddr) -> MVar TidSocketInfo -> [String] -> IO ()
-processClient (conn, clientaddr) tidList args = withSocketsDo $
+processClient :: (Socket, SockAddr) -> MVar TidSocketInfo -> [String] -> MVar  RequestStat -> IO ()
+processClient (conn, clientaddr) tidList args rstat = withSocketsDo $
   do
     -- | initialise data structures and populate the TidSocketInfo
     thisThreadId <- myThreadId
@@ -47,7 +48,7 @@ processClient (conn, clientaddr) tidList args = withSocketsDo $
     -- | in case of error send the appropriate error packet back to the client
     if allGood 
        then do
-       flagHeaders <- checkHeaderErrors (packetData clientInfo') conn tidList args
+       flagHeaders <- checkHeaderErrors (packetData clientInfo') conn tidList args rstat
        case flagHeaders of
          False -> do
            closeSocket conn clientInfo' tidList
@@ -55,10 +56,6 @@ processClient (conn, clientaddr) tidList args = withSocketsDo $
          _ -> processRequest clientInfo' tidList clientaddr
       else
         return ()
-
-    tids <- takeMVar tidList
-    putStrLn (show (Map.size tids))
-    putMVar tidList tids
 
 
 processRequest cI tidList clientaddr = withSocketsDo $
@@ -110,7 +107,7 @@ requestResponseCycle cI sI tidList = withSocketsDo $
 
 requestResponseCycle' termMVar tidList ssock csock = withSocketsDo $
   do
-    resp1 <- try (timeout 500 (recv ssock 2)) :: IO (Either SomeException (Maybe C.ByteString))
+    resp1 <- try (timeout timerCount (recv ssock 2)) :: IO (Either SomeException (Maybe C.ByteString))
     case resp1 of
       Left e -> return ()
       Right msg1 -> do
@@ -129,7 +126,7 @@ requestResponseCycle' termMVar tidList ssock csock = withSocketsDo $
                                           putMVar tidList newTids
 
 
-    resp2 <- try (timeout 500 (recv csock 2)) :: IO (Either SomeException (Maybe C.ByteString))
+    resp2 <- try (timeout timerCount (recv csock 2)) :: IO (Either SomeException (Maybe C.ByteString))
     case resp2 of
       Left e -> return ()
       Right msg2 -> do
@@ -168,7 +165,11 @@ handleRServer termMVar tidList sock initMsg = withSocketsDo $
                   (cI,sI) <- takeMVar termMVar
                   (sI', tidList') <- closeSocket sock sI tidList
                   putMVar termMVar (cI, sI')
-                else return ()
+                else do
+                  -- remove this threads entry from MVarList
+                  thisThreadId <- myThreadId
+                  tids <- takeMVar tidList
+                  putMVar tidList (delete thisThreadId tids)
 
 
 handleRClient termMVar tidList sock initMsg = withSocketsDo $
@@ -237,30 +238,46 @@ getRequestPacket cI = withSocketsDo $
            else return (cI', True)
 
 
-checkHeaderErrors hP conn tidList args = withSocketsDo $
+checkHeaderErrors hP conn tidList args rstat = withSocketsDo $
   do
     let hasHostHeader = Map.member "host" (hHeaders hP)
     case hasHostHeader of
       False -> do
         sendAll conn (C.pack badRequestPacket)
+        rstat' <- takeMVar rstat
+        rstat'' <- updateStat rstat' "error"
+        putMVar rstat rstat''
         return False
       _ -> case checkMethod (hMethod hP) of
              False -> do
                sendAll conn (C.pack methodNotAllowed)
+               rstat' <- takeMVar rstat
+               rstat'' <- updateStat rstat' "error"
+               putMVar rstat rstat''
                return False
              _ ->  case checkVersion (hVersion hP) of
                      False -> do
                        sendAll conn (C.pack badRequestPacket)
+                       rstat' <- takeMVar rstat
+                       rstat'' <- updateStat rstat' "error"
+                       putMVar rstat rstat''
                        return False
                      _ -> let Just x = Map.lookup "host" (hHeaders hP)
                            in case checkBlocked (snd x) args of
                                 True -> do
                                   tids <- takeMVar tidList
-                                  putStrLn (hMethod hP ++ hUrl hP ++ " [FILTERED]")
+                                  putStrLn (hMethod hP ++ " " ++ hUrl hP ++ " [FILTERED]")
                                   putMVar tidList tids
                                   sendAll conn (C.pack forbiddenPacket)
+                                  rstat' <- takeMVar rstat
+                                  rstat'' <- updateStat rstat' "filtered"
+                                  putMVar rstat rstat''
                                   return False
-                                _ -> return True
+                                _ -> do
+                                  rstat' <- takeMVar rstat
+                                  rstat'' <- updateStat rstat' "success"
+                                  putMVar rstat rstat''
+                                  return True
 
 
 updatingMap k v m = update (\_ -> Just v) k m
@@ -358,3 +375,4 @@ flush tI tidList = withSocketsDo $
            }, tidList)
 
 receiveSize = 8192
+timerCount = 500

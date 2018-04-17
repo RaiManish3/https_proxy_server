@@ -15,27 +15,26 @@ import System.Posix.Signals (installHandler, Handler(..), sigINT, sigUSR1, sigUS
 import System.Posix.Process
 
 import Data.Map as Map
+import Stats
 import ThreadProxy
-
 
 main :: IO ()
 main = do
   args <- getArgs
   tidList <- newMVar Map.empty
   pid <- getProcessID
-  maintid <- myThreadId
+  putStrLn (show (length args))
   putStrLn ("Server's Process ID: " ++ show pid)
 
   let port = "8888"
       backlog = 5
-  hostSocket port backlog tidList maintid args
+  hostSocket port backlog tidList args
 
 
 type Port = String
-type BackLog = Int
 
-hostSocket :: Port -> BackLog -> MVar TidSocketInfo -> ThreadId -> [String] -> IO ()
-hostSocket port backlog tidList maintid args = withSocketsDo $
+hostSocket :: Port -> Int -> MVar TidSocketInfo -> [String] -> IO ()
+hostSocket port backlog tidList args = withSocketsDo $
   do
     let hints = defaultHints {
             addrFlags = [AI_PASSIVE]
@@ -53,38 +52,46 @@ hostSocket port backlog tidList maintid args = withSocketsDo $
     listen sock backlog
 
     putStrLn ("Server running at -> " ++ show (addrAddress serveraddr))
+    rs <- newMVar initialStat
 
-    installHandler sigUSR1 (Catch $ handlerSIGUSR1 tidList) Nothing
+    installHandler sigUSR1 (Catch $ handlerSIGUSR1 tidList rs) Nothing
     installHandler sigUSR2 (CatchOnce $ handlerSIGUSR2 tidList sock) Nothing
     -- | TODO :: Disable sigInt later
     {- installHandler sigINT Ignore Nothing -}
 
-    listenForClient sock tidList args
+    listenForClient sock tidList args rs
 
 
-listenForClient :: Socket -> MVar TidSocketInfo -> [String] -> IO()
-listenForClient sock tidList args = withSocketsDo $ do
+listenForClient :: Socket -> MVar TidSocketInfo -> [String] -> MVar RequestStat -> IO()
+listenForClient sock tidList args rs = withSocketsDo $ do
   (conn , peer) <- accept sock
-  tid <- forkIO $ processClient (conn, peer) tidList args
-  listenForClient sock tidList args
+  tid <- forkIO $ processClient (conn, peer) tidList args rs
+  listenForClient sock tidList args rs
 
 
-handlerSIGUSR1 :: MVar TidSocketInfo -> IO ()
-handlerSIGUSR1 tidList = do
+handlerSIGUSR1 :: MVar TidSocketInfo -> MVar RequestStat -> IO ()
+handlerSIGUSR1 tidList rs = do
   tids <- takeMVar tidList
-  putStrLn "SIGUSR1 hit -- print statistics"
-  -- | TODO
+  rs' <- takeMVar rs
+  putMVar rs rs'
+  putStrLn "\n==================================================="
+  putStrLn "SIGUSR1 hit -- printing statistics"
+  putStrLn ("#Successful requests: " ++ show (tSuccess rs'))
+  putStrLn ("#Filtered requests: " ++ show (tFiltered rs'))
+  putStrLn ("#Error requests: " ++ show (tError rs'))
+  putStrLn "===================================================\n"
   putMVar tidList tids
 
 handlerSIGUSR2 :: MVar TidSocketInfo -> Socket -> IO ()
 handlerSIGUSR2 tidList mainSocket = do
   tids <- takeMVar tidList
+  putStrLn "\n==================================================="
   putStrLn "Encountered SIGUSR2 signal ..."
   putStrLn "Exiting gracefully"
-  -- | close all the sockets and then exit
   closeSocketLoop (Map.elems tids)
-  close mainSocket
   putMVar tidList Map.empty
+  putStrLn "===================================================\n"
+  close mainSocket
   exitImmediately ExitSuccess
 
 
