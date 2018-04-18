@@ -29,7 +29,7 @@ updateStat rs ss = do
                  }
     "error"   -> return RequestStat {
                    tSuccess = tSuccess rs
-                 , tFiltered = tFiltered rs + 1
-                 , tError = tError rs
+                 , tFiltered = tFiltered rs
+                 , tError = tError rs + 1
                  }
     _ -> return rs
