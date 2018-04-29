@@ -23,7 +23,6 @@ main = do
   args <- getArgs
   tidList <- newMVar Map.empty
   pid <- getProcessID
-  putStrLn (show (length args))
   putStrLn ("Server's Process ID: " ++ show pid)
 
   let port = "8888"
@@ -57,7 +56,7 @@ hostSocket port backlog tidList args = withSocketsDo $
     installHandler sigUSR1 (Catch $ handlerSIGUSR1 tidList rs) Nothing
     installHandler sigUSR2 (CatchOnce $ handlerSIGUSR2 tidList sock) Nothing
     -- | TODO :: Disable sigInt later
-    {- installHandler sigINT Ignore Nothing -}
+    installHandler sigINT Ignore Nothing
 
     listenForClient sock tidList args rs
 
