@@ -10,7 +10,7 @@ string comparision rather than prefix or suffix matching.
 Also one can find statistics related to the number of requests resulted in success, failure and filter.
 
 ## Implementation Details
-[ This ] (proposal/cs653_project.pdf) describes the modules used in this project.
+[ This ](proposal/cs653_project.pdf) describes the modules used in this project.
 
 ## Usage
 ``` bash
@@ -33,7 +33,7 @@ Checking the statistics:
 ```
 <br>
 
-One can check the memory this application is using by plotting the graph thorugh the following command.
+One can check the memory this application is using by plotting the graph thorugh the following command.<br>
 __NOTE__: It requires certain python libraries such as psrecord.
 ```bash
     $: bash checkStats.sh [plot_number]
